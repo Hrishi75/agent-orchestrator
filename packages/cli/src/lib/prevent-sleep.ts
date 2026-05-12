@@ -105,6 +105,7 @@ function preventIdleSleepLinux(targetPid: number): SleepPreventionHandle | null 
     return null;
   }
 
+  const inhibitPid = child.pid;
   child.unref();
   child.on("error", () => {
     // Non-systemd environment (no systemd-inhibit on PATH — WSL1, some
@@ -113,10 +114,19 @@ function preventIdleSleepLinux(targetPid: number): SleepPreventionHandle | null 
 
   return {
     release: () => {
+      // detached: true put systemd-inhibit in its own process group, with the
+      // `sh -c watchdog` as a child of that group. A direct child.kill() would
+      // only signal systemd-inhibit, leaving the sh watchdog to linger as an
+      // orphan until its next 5s poll. Negative-pid signals the whole group so
+      // both die immediately. Linux-only branch, so PGID semantics are safe.
       try {
-        child.kill();
+        process.kill(-inhibitPid, "SIGTERM");
       } catch {
-        // Already dead or not killable — ignore
+        try {
+          child.kill();
+        } catch {
+          // Already dead or not killable — ignore
+        }
       }
     },
   };

@@ -213,7 +213,7 @@ describe("preventIdleSleep", () => {
       );
     });
 
-    it("release function kills the systemd-inhibit process", () => {
+    it("release function group-kills systemd-inhibit and its sh watchdog", () => {
       const mockChild = {
         pid: 9999,
         unref: vi.fn(),
@@ -221,11 +221,35 @@ describe("preventIdleSleep", () => {
         kill: vi.fn(),
       } as unknown as ChildProcess;
       mockSpawn.mockReturnValue(mockChild);
+      const processKillSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
 
       const handle = preventIdleSleep();
       handle?.release();
 
+      // Negative PID targets the whole process group so the sh watchdog dies
+      // alongside systemd-inhibit, instead of lingering up to 5s as an orphan.
+      expect(processKillSpy).toHaveBeenCalledWith(-9999, "SIGTERM");
+      expect(mockChild.kill).not.toHaveBeenCalled();
+      processKillSpy.mockRestore();
+    });
+
+    it("release falls back to child.kill() if group-kill throws", () => {
+      const mockChild = {
+        pid: 9999,
+        unref: vi.fn(),
+        on: vi.fn(),
+        kill: vi.fn(),
+      } as unknown as ChildProcess;
+      mockSpawn.mockReturnValue(mockChild);
+      const processKillSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+        throw new Error("ESRCH");
+      });
+
+      const handle = preventIdleSleep();
+      expect(() => handle?.release()).not.toThrow();
+
       expect(mockChild.kill).toHaveBeenCalled();
+      processKillSpy.mockRestore();
     });
 
     it("returns null when systemd-inhibit is missing (no pid)", () => {
