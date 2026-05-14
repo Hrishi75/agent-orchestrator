@@ -75,6 +75,7 @@ import {
   manifest,
   default as defaultExport,
   resetPsCache,
+  resetTmuxPaneCache,
   toClaudeProjectPath,
   METADATA_UPDATER_SCRIPT,
   METADATA_UPDATER_SCRIPT_NODE,
@@ -129,10 +130,16 @@ function makeLaunchConfig(overrides: Partial<AgentLaunchConfig> = {}): AgentLaun
   };
 }
 
-function mockTmuxWithProcess(processName = "claude", tty = "/dev/ttys001", pid = 12345) {
+function mockTmuxWithProcess(
+  processName = "claude",
+  tty = "/dev/ttys001",
+  pid = 12345,
+  sessionId = "test-session",
+) {
   mockExecFileAsync.mockImplementation((cmd: string, args: string[]) => {
     if (cmd === "tmux" && args[0] === "list-panes") {
-      return Promise.resolve({ stdout: `${tty}\n`, stderr: "" });
+      // Batched `tmux list-panes -a -F "#{session_name}\t#{pane_tty}"` (#1850)
+      return Promise.resolve({ stdout: `${sessionId}\t${tty}\n`, stderr: "" });
     }
     if (cmd === "ps") {
       const ttyShort = tty.replace(/^\/dev\//, "");
@@ -162,6 +169,7 @@ function mockJsonlFiles(
 beforeEach(() => {
   vi.clearAllMocks();
   resetPsCache();
+  resetTmuxPaneCache();
   mockHomedir.mockReturnValue("/mock/home");
   // Default: non-Windows so existing tests are unaffected
   mockIsWindows.mockReturnValue(false);
@@ -364,7 +372,8 @@ describe("isProcessRunning", () => {
 
   it("returns false when no claude on tmux pane TTY", async () => {
     mockExecFileAsync.mockImplementation((cmd: string) => {
-      if (cmd === "tmux") return Promise.resolve({ stdout: "/dev/ttys002\n", stderr: "" });
+      if (cmd === "tmux")
+        return Promise.resolve({ stdout: "test-session\t/dev/ttys002\n", stderr: "" });
       if (cmd === "ps")
         return Promise.resolve({
           stdout: "  PID TT       ARGS\n  999 ttys002  bash\n",
@@ -409,7 +418,8 @@ describe("isProcessRunning", () => {
 
   it("returns indeterminate when cached ps command fails", async () => {
     mockExecFileAsync.mockImplementation((cmd: string) => {
-      if (cmd === "tmux") return Promise.resolve({ stdout: "/dev/ttys002\n", stderr: "" });
+      if (cmd === "tmux")
+        return Promise.resolve({ stdout: "test-session\t/dev/ttys002\n", stderr: "" });
       if (cmd === "ps") return Promise.reject(new Error("ps timed out"));
       return Promise.reject(new Error("unexpected"));
     });
@@ -428,7 +438,10 @@ describe("isProcessRunning", () => {
   it("finds claude on any pane in multi-pane session", async () => {
     mockExecFileAsync.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === "tmux" && args[0] === "list-panes") {
-        return Promise.resolve({ stdout: "/dev/ttys001\n/dev/ttys002\n", stderr: "" });
+        return Promise.resolve({
+          stdout: "test-session\t/dev/ttys001\ntest-session\t/dev/ttys002\n",
+          stderr: "",
+        });
       }
       if (cmd === "ps") {
         return Promise.resolve({
@@ -444,7 +457,7 @@ describe("isProcessRunning", () => {
   it("does not match similar process names like claude-code", async () => {
     mockExecFileAsync.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === "tmux" && args[0] === "list-panes") {
-        return Promise.resolve({ stdout: "/dev/ttys001\n", stderr: "" });
+        return Promise.resolve({ stdout: "test-session\t/dev/ttys001\n", stderr: "" });
       }
       if (cmd === "ps") {
         return Promise.resolve({

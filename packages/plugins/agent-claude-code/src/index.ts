@@ -633,13 +633,16 @@ const PS_CACHE_TTL_MS = 5_000;
  * call per TTL window that fetches ALL sessions at once, then split the
  * output into per-session TTY lists (#1850).
  */
-let tmuxPaneCache: {
+type TmuxPaneCacheEntry = {
   /** Per-session TTY output (same format as `tmux list-panes -F #{pane_tty}`) */
   results: Map<string, string>;
+  /** True if the batch tmux call itself failed (vs returned no panes). */
+  error: boolean;
   timestamp: number;
   /** In-flight promise so concurrent callers share the batch call */
   promise: Promise<void>;
-} | null = null;
+};
+let tmuxPaneCache: TmuxPaneCacheEntry | null = null;
 const TMUX_PANE_CACHE_TTL_MS = 5_000;
 
 /** Reset the tmux pane cache. Exported for testing only. */
@@ -650,9 +653,14 @@ export function resetTmuxPaneCache(): void {
 /**
  * Fetch ALL tmux panes in one call (`tmux list-panes -a`) and cache the
  * results indexed by session name.  Concurrent requests within the TTL
- * window share the same batch call.
+ * window share the same batch call.  Returns:
+ *   - string: newline-separated TTY list for the handle
+ *   - null: tmux ran successfully but the handle has no panes (session gone)
+ *   - PROCESS_PROBE_INDETERMINATE: tmux call itself failed/timed out
  */
-async function getCachedTmuxPanes(handleId: string): Promise<string | null> {
+async function getCachedTmuxPanes(
+  handleId: string,
+): Promise<string | null | typeof PROCESS_PROBE_INDETERMINATE> {
   if (isWindows()) return null;
 
   const now = Date.now();
@@ -660,17 +668,23 @@ async function getCachedTmuxPanes(handleId: string): Promise<string | null> {
   // Return cached result if still fresh
   if (tmuxPaneCache && now - tmuxPaneCache.timestamp < TMUX_PANE_CACHE_TTL_MS) {
     await tmuxPaneCache.promise;
+    if (tmuxPaneCache.error) return PROCESS_PROBE_INDETERMINATE;
     return tmuxPaneCache.results.get(handleId) ?? null;
   }
 
   // Start a batch fetch of all sessions' panes
   const results = new Map<string, string>();
-  const promise = execFileAsync("tmux", [
-    "list-panes",
-    "-a",
-    "-F",
-    "#{session_name}\t#{pane_tty}",
-  ], { timeout: 30_000 })
+  const entry: TmuxPaneCacheEntry = {
+    results,
+    error: false,
+    timestamp: now,
+    promise: Promise.resolve(),
+  };
+  const promise = execFileAsync(
+    "tmux",
+    ["list-panes", "-a", "-F", "#{session_name}\t#{pane_tty}"],
+    { timeout: 30_000 },
+  )
     .then(({ stdout }) => {
       for (const line of stdout.trim().split("\n")) {
         const tabIdx = line.indexOf("\t");
@@ -683,11 +697,15 @@ async function getCachedTmuxPanes(handleId: string): Promise<string | null> {
       }
     })
     .catch(() => {
-      // tmux not running or no sessions — results stays empty
+      // tmux call failed (binary missing, timeout, etc.) — mark indeterminate
+      // so callers don't mis-classify a probe failure as "no process".
+      entry.error = true;
     });
 
-  tmuxPaneCache = { results, timestamp: now, promise };
+  entry.promise = promise;
+  tmuxPaneCache = entry;
   await promise;
+  if (entry.error) return PROCESS_PROBE_INDETERMINATE;
   return results.get(handleId) ?? null;
 }
 
@@ -745,6 +763,7 @@ async function findClaudeProcess(
     if (handle.runtimeName === "tmux" && handle.id) {
       if (isWindows()) return null;
       const ttyOut = await getCachedTmuxPanes(handle.id);
+      if (ttyOut === PROCESS_PROBE_INDETERMINATE) return PROCESS_PROBE_INDETERMINATE;
       if (!ttyOut) return null;
       // Iterate all pane TTYs (multi-pane sessions) — succeed on any match
       const ttys = ttyOut
