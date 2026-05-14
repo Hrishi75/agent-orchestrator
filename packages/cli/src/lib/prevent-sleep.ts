@@ -18,7 +18,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { isLinux, isMac } from "@aoagents/ao-core";
+import { isLinux, isMac, killProcessTree } from "@aoagents/ao-core";
 
 export interface SleepPreventionHandle {
   /** Release the sleep prevention assertion early (optional — auto-releases on process exit) */
@@ -114,20 +114,14 @@ function preventIdleSleepLinux(targetPid: number): SleepPreventionHandle | null 
 
   return {
     release: () => {
-      // detached: true put systemd-inhibit in its own process group, with the
-      // `sh -c watchdog` as a child of that group. A direct child.kill() would
-      // only signal systemd-inhibit, leaving the sh watchdog to linger as an
-      // orphan until its next 5s poll. Negative-pid signals the whole group so
-      // both die immediately. Linux-only branch, so PGID semantics are safe.
-      try {
-        process.kill(-inhibitPid, "SIGTERM");
-      } catch {
-        try {
-          child.kill();
-        } catch {
-          // Already dead or not killable — ignore
-        }
-      }
+      // detached: true put systemd-inhibit in its own process group with the
+      // `sh -c watchdog` as a group member. killProcessTree signals the
+      // negative PID so the whole group dies in one shot (no orphan watchdog
+      // lingering up to 5s); it also handles the direct-PID fallback if the
+      // group-kill EPERMs. CROSS_PLATFORM.md mandates this helper for any
+      // process-tree teardown. Fire-and-forget — kernel signal delivery is
+      // async anyway and release() is sync.
+      void killProcessTree(inhibitPid);
     },
   };
 }

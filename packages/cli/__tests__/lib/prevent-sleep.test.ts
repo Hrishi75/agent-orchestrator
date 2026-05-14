@@ -226,14 +226,14 @@ describe("preventIdleSleep", () => {
       const handle = preventIdleSleep();
       handle?.release();
 
-      // Negative PID targets the whole process group so the sh watchdog dies
-      // alongside systemd-inhibit, instead of lingering up to 5s as an orphan.
+      // killProcessTree signals the negative PID so the whole group dies in
+      // one shot — the sh watchdog can't linger up to 5s as an orphan.
       expect(processKillSpy).toHaveBeenCalledWith(-9999, "SIGTERM");
       expect(mockChild.kill).not.toHaveBeenCalled();
       processKillSpy.mockRestore();
     });
 
-    it("release falls back to child.kill() if group-kill throws", () => {
+    it("release falls back to direct-PID kill if group-kill throws", async () => {
       const mockChild = {
         pid: 9999,
         unref: vi.fn(),
@@ -241,14 +241,25 @@ describe("preventIdleSleep", () => {
         kill: vi.fn(),
       } as unknown as ChildProcess;
       mockSpawn.mockReturnValue(mockChild);
-      const processKillSpy = vi.spyOn(process, "kill").mockImplementation(() => {
-        throw new Error("ESRCH");
-      });
+      // killProcessTree's POSIX path tries process.kill(-pid) first, then
+      // falls back to process.kill(pid) if the group-kill throws. Throw only
+      // for the negative-PID call so we can assert the fallback is exercised.
+      const processKillSpy = vi
+        .spyOn(process, "kill")
+        .mockImplementation((pid: number) => {
+          if (pid < 0) throw new Error("ESRCH");
+          return true;
+        });
 
       const handle = preventIdleSleep();
       expect(() => handle?.release()).not.toThrow();
+      // release() is fire-and-forget around an async helper; flush the
+      // microtask queue so the inner try/catch runs before we assert.
+      await Promise.resolve();
 
-      expect(mockChild.kill).toHaveBeenCalled();
+      expect(processKillSpy).toHaveBeenCalledWith(-9999, "SIGTERM");
+      expect(processKillSpy).toHaveBeenCalledWith(9999, "SIGTERM");
+      expect(mockChild.kill).not.toHaveBeenCalled();
       processKillSpy.mockRestore();
     });
 
