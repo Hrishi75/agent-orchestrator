@@ -212,7 +212,7 @@ describe("preventIdleSleep", () => {
         "--mode=block",
         "sh",
         "-c",
-        "while kill -0 12345 2>/dev/null; do sleep 5; done",
+        "while kill -0 '12345' 2>/dev/null; do sleep 5; done",
       ]);
       expect(opts).toEqual({ stdio: "ignore", detached: true });
       expect(mockChild.unref).toHaveBeenCalled();
@@ -232,7 +232,7 @@ describe("preventIdleSleep", () => {
 
       const args = mockSpawn.mock.calls[0]![1] as string[];
       expect(args[args.length - 1]).toBe(
-        `while kill -0 ${process.pid} 2>/dev/null; do sleep 5; done`,
+        `while kill -0 '${process.pid}' 2>/dev/null; do sleep 5; done`,
       );
     });
 

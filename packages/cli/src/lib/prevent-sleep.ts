@@ -18,7 +18,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { isLinux, isMac, killProcessTree } from "@aoagents/ao-core";
+import { isLinux, isMac, killProcessTree, shellEscape } from "@aoagents/ao-core";
 
 export interface SleepPreventionHandle {
   /** Release the sleep prevention assertion early (optional — auto-releases on process exit) */
@@ -91,7 +91,7 @@ function preventIdleSleepLinux(targetPid: number): SleepPreventionHandle | null 
   //   --what=idle      only blocks idle auto-suspend (not lid-close / manual)
   //   --mode=block     actually prevents the action (vs `delay`)
   //   --who / --why    human-readable strings shown by `systemd-inhibit --list`
-  const watchdog = `while kill -0 ${targetPid} 2>/dev/null; do sleep 5; done`;
+  const watchdog = `while kill -0 ${shellEscape(String(targetPid))} 2>/dev/null; do sleep 5; done`;
   const child: ChildProcess = spawn(
     "systemd-inhibit",
     [
